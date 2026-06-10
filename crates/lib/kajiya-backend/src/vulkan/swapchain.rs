@@ -224,8 +224,11 @@ impl Swapchain {
     ) -> std::result::Result<SwapchainImage, SwapchainAcquireImageErr> {
         puffin::profile_function!();
 
+        // The acquire semaphore must be selected before we know which image the
+        // driver will hand back, so it cycles through a pool independently of the
+        // returned image index. Some drivers (notably NVIDIA) do not return image
+        // indices in lock-step with this counter, so we must not assume they match.
         let acquire_semaphore = self.acquire_semaphores[self.next_semaphore];
-        let rendering_finished_semaphore = self.rendering_finished_semaphores[self.next_semaphore];
 
         let present_index = unsafe {
             self.fns.acquire_next_image(
@@ -239,9 +242,14 @@ impl Swapchain {
 
         match present_index {
             Ok(present_index) => {
-                assert_eq!(present_index, self.next_semaphore);
+                // The rendering-finished semaphore is keyed off the image index,
+                // since that's what `present_image` operates on. Reusing it is safe
+                // because the next acquire of the same image implies the previous
+                // present of that image has completed.
+                let rendering_finished_semaphore =
+                    self.rendering_finished_semaphores[present_index];
 
-                self.next_semaphore = (self.next_semaphore + 1) % self.images.len();
+                self.next_semaphore = (self.next_semaphore + 1) % self.acquire_semaphores.len();
                 Ok(SwapchainImage {
                     image: self.images[present_index].clone(),
                     image_index: present_index as u32,
